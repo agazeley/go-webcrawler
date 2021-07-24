@@ -1,5 +1,5 @@
 ## Run unit tests
-go test ./... --cover
+- go test ./... --cover
 
 ## Testing - should find 4 pages, requires running two processs in separate terminals
 - python3 -m http.server -d ./static
