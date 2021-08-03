@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/signal"
 	"strconv"
+	"sync"
 	"time"
 
 	"github.com/PuerkitoBio/goquery"
@@ -20,18 +21,24 @@ type Opts struct {
 }
 
 type Crawler struct {
-	crawledPages map[string]bool
-	maxCrawls    uint64
-	workChan     chan []string
-	rootUrl      string
+	crawledPages    map[string]bool
+	maxCrawls       uint64
+	maxRoutines     int
+	workChan        chan []string
+	unseenLinksChan chan string
+	rootUrl         string
+	wg              sync.WaitGroup
 }
 
 func NewCrawler(opts *Opts) *Crawler {
 	c := &Crawler{
-		crawledPages: make(map[string]bool),
-		maxCrawls:    uint64(math.Inf(1)),
-		workChan:     make(chan []string),
-		rootUrl:      opts.rootUrl,
+		crawledPages:    make(map[string]bool),
+		maxCrawls:       uint64(math.Inf(1)),
+		workChan:        make(chan []string),
+		unseenLinksChan: make(chan string),
+		rootUrl:         opts.rootUrl,
+		maxRoutines:     20,
+		wg:              sync.WaitGroup{},
 	}
 
 	if opts.maxCrawls != 0 {
@@ -74,7 +81,6 @@ func parseResponse(resp *http.Response) []string {
 	document.Find("a").Each(func(i int, element *goquery.Selection) {
 		href, exists := element.Attr("href")
 		if exists && isValidUrl(href) {
-			fmt.Println("  " + href)
 			urls = append(urls, href)
 		}
 	})
@@ -83,37 +89,57 @@ func parseResponse(resp *http.Response) []string {
 
 // Fetch all the anchor links on a page and push them to the channel
 func scrapeUrl(url string) []string {
-	fmt.Println(url)
+
 	resp, err := http.Get(url)
 	if err != nil {
 		return []string{}
 	}
-	return parseResponse(resp)
+
+	urls := parseResponse(resp)
+	fmt.Println(url)
+	for _, link := range urls {
+		fmt.Println("\t", link)
+	}
+	return urls
 }
 
-// Spin up a new go-routine and push output of that routine worker channel
-func (c *Crawler) submitJob(url string) {
-	c.crawledPages[url] = true
-	go func(url string) {
-		c.workChan <- scrapeUrl(url)
-	}(url)
+func (c *Crawler) checkUrls() {
+	// Loop through and make sure you have not seen the URL
+	n := 0
+	for urls := range c.workChan {
+		// Puhs unseen into the channel to process unseen links
+		for _, url := range urls {
 
-}
+			// Process only uncrawled pages
+			if !c.crawledPages[url] {
+				n += 1
+				c.wg.Add(1)
+				c.crawledPages[url] = true
+				c.unseenLinksChan <- url
+			}
 
-func (c *Crawler) processUrls(urls []string) bool {
-	for _, url := range urls {
-		// Exit condition 1
-		if uint64(len(c.crawledPages)) >= c.maxCrawls {
-			return true // done
-		}
-
-		// Process only uncrawled pages
-		if !c.crawledPages[url] {
-			c.submitJob(url)
+			// Exit condition
+			if n >= int(c.maxCrawls) {
+				c.wg.Wait()
+				return // done
+			}
 		}
 	}
+}
 
-	return false // no break condition hit yet
+func (c *Crawler) createWorkers() {
+	// Set up our routines  to scape the urls
+	for i := 0; i < c.maxRoutines; i++ {
+		go func() {
+			for url := range c.unseenLinksChan {
+				foundLinks := scrapeUrl(url)
+
+				// Push to url checking channel
+				go func() { c.workChan <- foundLinks }()
+				c.wg.Done()
+			}
+		}()
+	}
 }
 
 func (c *Crawler) Crawl() map[string]bool {
@@ -132,13 +158,9 @@ func (c *Crawler) Crawl() map[string]bool {
 		c.workChan <- []string{c.rootUrl}
 	}()
 
-	// While we get jobs submitted to the worker Process
-	for urls := range c.workChan {
-		done := c.processUrls(urls)
-		if done {
-			break
-		}
-	}
+	c.createWorkers()
+	c.checkUrls()
+
 	return c.crawledPages
 }
 

@@ -138,36 +138,3 @@ func Test_ScrapeUrl(t *testing.T) {
 	urls = scrapeUrl(ts2.URL)
 	checkLen(t, urls, 2)
 }
-
-func Test_CrawlerJobSubmit(t *testing.T) {
-	ts1 := NewTestServer(baseUrl, map[string]string{"/": noAnchorsHtml})
-	ts1.Close()
-
-	c := NewCrawler(&Opts{})
-	c.submitJob(ts1.URL)
-	checkLen(t, c.crawledPages, 1)
-
-	ts2 := NewTestServer(baseUrl, map[string]string{"/": twoAnchorHtml})
-	ts1.Close()
-
-	c.submitJob(ts2.URL)
-	checkLen(t, c.crawledPages, 2)
-}
-
-func Test_CrawlerProcessUrls(t *testing.T) {
-	ts1 := NewTestServer(baseUrl, map[string]string{"/": noAnchorsHtml, "/test": oneAnchorHtml})
-	ts1.Close()
-
-	c := NewCrawler(&Opts{})
-	urls := []string{
-		ts1.URL,
-		fmt.Sprintf("%v/test", ts1.URL),
-	}
-	c.processUrls(urls)
-	checkLen(t, c.crawledPages, 2)
-
-	//Retry submission
-	c.processUrls(urls)
-	checkLen(t, c.crawledPages, 2)
-
-}
